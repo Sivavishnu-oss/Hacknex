@@ -1,0 +1,17 @@
+# Core Deep Learning & Computer Vision
+ultralytics>=8.0.0
+opencv-python-headless>=4.8.0
+numpy>=1.24.0,<2.0.0
+pillow>=10.0.0
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Multimodal Embeddings (OpenCLIP)
+open-clip-torch>=2.20.0
+
+# Web Dashboard & UI
+streamlit>=1.30.0
+
+# Utilities
+tqdm>=4.65.0
+requests>=2.31.0
