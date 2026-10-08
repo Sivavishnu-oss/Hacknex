@@ -164,7 +164,6 @@ After starting, open your browser and navigate to:
 | **Video Processing** | OpenCV (`cv2`) |
 | **Database** | SQLite3 |
 | **Frontend UI** | Streamlit |
-| **Acceleration** | Apple Silicon MPS / CUDA |
 
 ---
 
