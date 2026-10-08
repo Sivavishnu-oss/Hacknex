@@ -1,4 +1,4 @@
-# 🎬 HNX26EPS05 — Multi-Stream Video Intelligence Platform
+# 🎬  Multi-Stream Video Intelligence Platform
 
 An intelligent video surveillance and search platform built with **YOLO26** (`yolo26n.pt`) and **OpenCLIP**. Upload or select recorded CCTV video streams, search with a natural-language command bar, and automatically fetch the matching **photos and video timestamps**.
 
@@ -131,7 +131,7 @@ To launch the interactive dashboard:
 streamlit run app.py
 ```
 After starting, open your browser and navigate to:
-👉 **[http://localhost:8501](http://localhost:8501)**
+👉 run in the localhost
 
 ---
 
@@ -169,4 +169,4 @@ After starting, open your browser and navigate to:
 ---
 
 ## 📜 License
-Developed for **HNX26EPS05 Multi-Stream Video Intelligence**.
+Developed for Multi-Stream Video Intelligence**.
