@@ -35,7 +35,9 @@ class VideoIntelligenceEngine:
         output_dir: str,
         sample_interval_sec: float = 0.5,
         conf_threshold: float = 0.25,
-        progress_callback: Optional[Callable[[float, str], None]] = None
+        progress_callback: Optional[Callable[[float, str], None]] = None,
+        camera_name: Optional[str] = None,
+        db_path: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Processes any video uploaded by the user:
@@ -43,8 +45,17 @@ class VideoIntelligenceEngine:
         - Runs YOLO26 detection on frames
         - Saves annotated evidence images
         - Computes multimodal CLIP embeddings for both objects and whole scenes
+        - Stores detections and video metadata into SQLite database
         - Returns structured index of detections and visual keyframes
         """
+        import database
+
+        if camera_name is None:
+            camera_name = os.path.splitext(os.path.basename(video_path))[0]
+
+        actual_db_path = db_path or database.DEFAULT_DB_PATH
+        database.init_db(actual_db_path)
+
         os.makedirs(output_dir, exist_ok=True)
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
@@ -52,8 +63,22 @@ class VideoIntelligenceEngine:
 
         fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         duration_sec = total_frames / fps
         frame_step = max(1, int(fps * sample_interval_sec))
+
+        # Save or update camera metadata
+        database.delete_camera_records(camera_name, db_path=actual_db_path)
+        database.save_camera(
+            camera_id=camera_name.lower().replace(" ", "_"),
+            camera_name=camera_name,
+            video_path=video_path,
+            fps=float(fps),
+            duration_sec=float(duration_sec),
+            resolution=f"{width}x{height}",
+            db_path=actual_db_path
+        )
 
         catalog = []
         frame_idx = 0
@@ -71,9 +96,28 @@ class VideoIntelligenceEngine:
                 feats /= feats.norm(dim=-1, keepdim=True)
                 feats_np = feats.cpu().numpy().astype(np.float32)
 
+            db_batch = []
             for i, meta in enumerate(pending_items):
                 meta["embedding"] = feats_np[i]
                 catalog.append(meta)
+
+                # Store YOLO detections into database
+                if meta.get("type") == "detection":
+                    db_batch.append({
+                        "camera": camera_name,
+                        "timestamp_sec": meta["timestamp_sec"],
+                        "timestamp_str": meta["timestamp_str"],
+                        "object_class": meta["object"],
+                        "confidence": meta["confidence"],
+                        "bbox": meta.get("bbox", []),
+                        "color_hint": meta.get("color"),
+                        "evidence_path": meta["evidence_path"],
+                        "embedding": feats_np[i].tobytes(),
+                        "track_id": None
+                    })
+
+            if db_batch:
+                database.insert_detections_batch(db_batch, db_path=actual_db_path)
 
             pending_crops.clear()
             pending_items.clear()

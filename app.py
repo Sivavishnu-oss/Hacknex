@@ -2,10 +2,18 @@ import streamlit as st
 import os
 import shutil
 import tempfile
+import pandas as pd
 from PIL import Image
 
 from video_intelligence_engine import VideoIntelligenceEngine
-from database import init_db, query_detections, get_unique_cameras, DEFAULT_DB_PATH
+from database import (
+    init_db,
+    query_detections,
+    get_unique_cameras,
+    get_detections_for_camera,
+    get_all_cameras_meta,
+    DEFAULT_DB_PATH
+)
 from ai_explainer import generate_llm_explanation
 
 # Page setup
@@ -93,10 +101,19 @@ if "active_catalog" not in st.session_state:
 if "active_video_path" not in st.session_state:
     st.session_state["active_video_path"] = "videos/gate.mp4" if os.path.exists("videos/gate.mp4") else None
 
-if "last_query" not in st.session_state:
-    st.session_state["last_query"] = ""
+if "show_database" not in st.session_state:
+    st.session_state["show_database"] = False
 
 engine = st.session_state["engine"]
+
+# Derive current video name/camera identifier
+def get_current_camera_name(vpath):
+    if not vpath:
+        return "Unknown"
+    base = os.path.splitext(os.path.basename(vpath))[0]
+    return base.capitalize()
+
+current_camera_name = get_current_camera_name(st.session_state.get("active_video_path"))
 
 # Top Header
 st.title("🎬 Multi-Stream Video Intelligence with YOLO26 & CLIP")
@@ -122,6 +139,7 @@ if video_source_mode == "Upload My Own Video":
         if st.session_state.get("active_video_path") != saved_video_path:
             st.session_state["active_video_path"] = saved_video_path
             st.session_state["active_catalog"] = []
+            st.session_state["show_database"] = False
 
 else:
     sample_options = {
@@ -134,6 +152,18 @@ else:
     if os.path.exists(sample_path) and st.session_state.get("active_video_path") != sample_path:
         st.session_state["active_video_path"] = sample_path
         st.session_state["active_catalog"] = []
+        st.session_state["show_database"] = False
+
+# Quick toggle also in sidebar
+st.sidebar.markdown("---")
+st.sidebar.subheader("🗄️ Database Inspector")
+db_sidebar_toggle = st.sidebar.checkbox(
+    "📂 View Video Database",
+    value=st.session_state["show_database"],
+    key="sidebar_db_toggle",
+    help="Click to inspect all detections, metadata, and timestamps stored in SQLite for this video"
+)
+st.session_state["show_database"] = db_sidebar_toggle
 
 # Video processing parameters
 st.sidebar.markdown("---")
@@ -148,7 +178,7 @@ col_vid, col_info = st.columns([1.2, 1])
 with col_vid:
     if current_video and os.path.exists(current_video):
         st.video(current_video)
-        st.caption(f"Currently loaded video: `{os.path.basename(current_video)}`")
+        st.caption(f"Currently loaded video: `{os.path.basename(current_video)}` (Camera: **{current_camera_name}**)")
     else:
         st.info("Please upload a video or select a sample stream to begin.")
 
@@ -157,7 +187,7 @@ with col_info:
     num_indexed = len(st.session_state["active_catalog"])
 
     if num_indexed == 0:
-        st.warning("Video is not indexed yet. Click **Process Video with YOLO26** below to scan and extract detectable objects and visual embeddings.")
+        st.warning("Video is not indexed yet. Click **Process Video with YOLO26** below to scan and extract detectable objects and visual embeddings into the database.")
         if current_video and os.path.exists(current_video):
             if st.button("🚀 Process Video with YOLO26", type="primary", use_container_width=True):
                 progress_bar = st.progress(0.0)
@@ -174,18 +204,156 @@ with col_info:
                         output_dir=ev_out_dir,
                         sample_interval_sec=sample_rate,
                         conf_threshold=yolo_conf,
-                        progress_callback=update_progress
+                        progress_callback=update_progress,
+                        camera_name=current_camera_name
                     )
                     st.session_state["active_catalog"] = cat
 
-                st.success(f"Video indexed successfully! Captured {len(cat)} detections and keyframes.")
+                st.success(f"Video indexed & saved to database! Captured {len(cat)} detections and keyframes.")
                 st.rerun()
-    else:
-        st.success(f"Video indexed! **{num_indexed} visual events & keyframes** ready for natural language query.")
-        reindex = st.button("🔄 Re-process Video", use_container_width=True)
-        if reindex:
-            st.session_state["active_catalog"] = []
+
+        # Even if not indexed in current session, allow user to check if DB has records for this camera
+        if st.button("🗄️ Click to See Video Database", use_container_width=True):
+            st.session_state["show_database"] = not st.session_state["show_database"]
             st.rerun()
+
+    else:
+        st.success(f"Video indexed! **{num_indexed} visual events & keyframes** saved in SQLite database.")
+        col_btn1, col_btn2 = st.columns(2)
+        with col_btn1:
+            reindex = st.button("🔄 Re-process Video", use_container_width=True)
+            if reindex:
+                st.session_state["active_catalog"] = []
+                st.rerun()
+        with col_btn2:
+            db_label = "❌ Close Database" if st.session_state["show_database"] else "🗄️ Click & See Database"
+            if st.button(db_label, type="secondary", use_container_width=True):
+                st.session_state["show_database"] = not st.session_state["show_database"]
+                st.rerun()
+
+# =========================================================================
+# 🗄️ DATABASE VIEWER SECTION (CLICK & SEE THE DATABASE)
+# =========================================================================
+if st.session_state.get("show_database", False):
+    st.markdown("---")
+    db_header_col, db_close_col = st.columns([5, 1])
+    with db_header_col:
+        st.subheader(f"🗄️ Database Records for Video: `{os.path.basename(current_video) if current_video else 'N/A'}`")
+        st.caption("Inspect all SQLite detections, coordinates, labels, confidence scores, and video metadata.")
+    with db_close_col:
+        if st.button("✖ Close Database", use_container_width=True):
+            st.session_state["show_database"] = False
+            st.rerun()
+
+    # Query detections for this video/camera
+    records = get_detections_for_camera(current_camera_name)
+    
+    # Also check if user has active in-memory catalog
+    catalog_items = [c for c in st.session_state.get("active_catalog", []) if c.get("type") == "detection"]
+    
+    # Display quick summary metrics
+    total_db_dets = len(records)
+    total_catalog = len(catalog_items)
+    
+    metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+    with metric_col1:
+        st.metric("DB Detections", total_db_dets)
+    with metric_col2:
+        st.metric("Session Indexed Detections", total_catalog)
+    with metric_col3:
+        unique_classes = len(set(r["object_class"] for r in records)) if records else (len(set(c["object"] for c in catalog_items)) if catalog_items else 0)
+        st.metric("Unique Classes", unique_classes)
+    with metric_col4:
+        st.metric("Storage DB", os.path.basename(DEFAULT_DB_PATH))
+
+    # Tabs for detailed inspection
+    db_tab1, db_tab2, db_tab3 = st.tabs(["📋 Detections Table", "🔍 Filter & Inspect", "📊 Video Metadata"])
+
+    with db_tab1:
+        if records:
+            df_rows = []
+            for r in records:
+                df_rows.append({
+                    "ID": r.get("id"),
+                    "Camera": r.get("camera"),
+                    "Timestamp": r.get("timestamp_str"),
+                    "Time (s)": round(r.get("timestamp_sec", 0), 2),
+                    "Class": r.get("object_class"),
+                    "Confidence": f"{float(r.get('confidence', 0)):.2%}",
+                    "Color": r.get("color_hint") or "N/A",
+                    "BBox [x1, y1, x2, y2]": str(r.get("bbox", [])),
+                    "Evidence Path": r.get("evidence_path")
+                })
+            df = pd.DataFrame(df_rows)
+            st.dataframe(df, use_container_width=True, height=350)
+            
+            # Download options
+            csv_data = df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Download Database Records as CSV",
+                data=csv_data,
+                file_name=f"{current_camera_name}_detections.csv",
+                mime="text/csv"
+            )
+        elif catalog_items:
+            st.info("Showing in-memory catalog (unsaved or current session):")
+            df_rows = []
+            for idx, c in enumerate(catalog_items):
+                df_rows.append({
+                    "Index": idx + 1,
+                    "Camera": current_camera_name,
+                    "Timestamp": c.get("timestamp_str"),
+                    "Time (s)": c.get("timestamp_sec"),
+                    "Class": c.get("object"),
+                    "Confidence": f"{float(c.get('confidence', 0)):.2%}",
+                    "Color": c.get("color") or "N/A",
+                    "BBox": str(c.get("bbox", [])),
+                    "Evidence Path": c.get("evidence_path")
+                })
+            df = pd.DataFrame(df_rows)
+            st.dataframe(df, use_container_width=True, height=350)
+        else:
+            st.warning(f"No database records found for camera/video '{current_camera_name}'. Please click '🚀 Process Video with YOLO26' above to populate the database.")
+
+    with db_tab2:
+        if records or catalog_items:
+            source_data = records if records else [
+                {"object_class": c["object"], "confidence": c["confidence"], "timestamp_sec": c["timestamp_sec"], "timestamp_str": c["timestamp_str"], "color_hint": c.get("color"), "bbox": c.get("bbox"), "evidence_path": c.get("evidence_path")}
+                for c in catalog_items
+            ]
+            
+            all_classes = sorted(list(set(r.get("object_class") for r in source_data if r.get("object_class"))))
+            filt_col1, filt_col2 = st.columns(2)
+            with filt_col1:
+                selected_cls = st.selectbox("Filter by Object Class:", ["All"] + all_classes)
+            with filt_col2:
+                min_conf = st.slider("Filter by Minimum Confidence:", 0.0, 1.0, 0.25, 0.05)
+                
+            filtered = [
+                r for r in source_data
+                if (selected_cls == "All" or r.get("object_class") == selected_cls) and float(r.get("confidence", 0)) >= min_conf
+            ]
+            st.write(f"Showing **{len(filtered)}** filtered detections:")
+            
+            if filtered:
+                # Show snapshot previews for top filtered entries
+                preview_cols = st.columns(min(4, max(1, len(filtered))))
+                for idx, f_item in enumerate(filtered[:4]):
+                    with preview_cols[idx % len(preview_cols)]:
+                        ev_path = f_item.get("evidence_path", "")
+                        if ev_path and os.path.exists(ev_path):
+                            st.image(ev_path, caption=f"{f_item.get('object_class')} @ {f_item.get('timestamp_str')}")
+                        else:
+                            st.caption(f"{f_item.get('object_class')} @ {f_item.get('timestamp_str')}")
+
+    with db_tab3:
+        all_cams = get_all_cameras_meta()
+        if all_cams:
+            cam_df = pd.DataFrame(all_cams)
+            st.write("All registered video streams in SQLite database:")
+            st.dataframe(cam_df, use_container_width=True)
+        else:
+            st.info("No registered cameras yet in metadata table.")
 
 st.markdown("---")
 

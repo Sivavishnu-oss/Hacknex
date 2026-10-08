@@ -200,6 +200,36 @@ def get_unique_cameras(db_path: str = DEFAULT_DB_PATH) -> List[str]:
     conn.close()
     return cameras
 
+def delete_camera_records(camera_name: str, db_path: str = DEFAULT_DB_PATH):
+    """Deletes existing detections and camera metadata for a given camera / video name."""
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM detections WHERE LOWER(camera) = ?", (camera_name.lower(),))
+    cursor.execute("DELETE FROM cameras WHERE LOWER(camera_id) = ? OR LOWER(camera_name) = ?", (camera_name.lower(), camera_name.lower()))
+    conn.commit()
+    conn.close()
+
+def get_detections_for_camera(camera_name: str, db_path: str = DEFAULT_DB_PATH) -> List[Dict[str, Any]]:
+    """Returns all detections recorded for a specific camera/video."""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, camera, timestamp_sec, timestamp_str, object_class,
+               confidence, bbox_json, color_hint, evidence_path, track_id
+        FROM detections
+        WHERE LOWER(camera) = ?
+        ORDER BY timestamp_sec ASC, confidence DESC
+    """, (camera_name.lower(),))
+    rows = cursor.fetchall()
+    results = []
+    for r in rows:
+        item = dict(r)
+        item["bbox"] = json.loads(item["bbox_json"]) if item["bbox_json"] else []
+        results.append(item)
+    conn.close()
+    return results
+
 def get_unique_objects(db_path: str = DEFAULT_DB_PATH) -> List[str]:
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
@@ -220,3 +250,4 @@ def get_all_cameras_meta(db_path: str = DEFAULT_DB_PATH) -> List[Dict[str, Any]]
 if __name__ == "__main__":
     init_db()
     print("Database schema successfully initialized.")
+
