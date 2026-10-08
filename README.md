@@ -131,7 +131,7 @@ To launch the interactive dashboard:
 streamlit run app.py
 ```
 After starting, open your browser and navigate to:
-👉 **[http://localhost:8501](http://localhost:8501)**
+👉 run in the localhost
 
 ---
 
